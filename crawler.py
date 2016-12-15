@@ -1,86 +1,59 @@
 import urllib.request
 import urllib.parse
-import http.cookiejar
 import json
-import csv
+import re
+import pprint
 
-headers = {
-    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/54.0.2840.98 Safari/537.36'
-}
-
-cj = http.cookiejar.CookieJar()
-opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
-
-base_url = 'http://data.stats.gov.cn/easyquery.htm'
-
-provinces = []
+pp = pprint.PrettyPrinter(indent=4)
 
 
-def init(family_code):
-    params = {
-        'm': 'getOtherWds',
-        'dbcode': 'fsnd',
-        'rowcode': 'zb',
-        'colcode': 'sj',
-        'wds': json.dumps([{
-            'wdcode': 'zb',
-            'valuecode': family_code
-        }])
-    }
-    data = get(params)
-    for node in data['returndata'][0]['nodes']:
-        provinces.append({
-            'code': node['code'],
-            'name': node['name']
-        })
+def parse_url(base_url, params):
+    if params:
+        return base_url + '?' + urllib.parse.urlencode(params)
+    return base_url
 
 
-def get_data(category_code, province_code):
-    params = {
-        'm': 'QueryData',
-        'dbcode': 'fsnd',
-        'rowcode': 'zb',
-        'colcode': 'sj',
-        'wds': json.dumps([{
-            'wdcode': 'reg',
-            'valuecode': province_code
-        }]),
-        'dfwds': json.dumps([{
-            'wdcode': 'zb',
-            'valuecode': category_code
-        }, {
-            'wdcode': 'sj',
-            'valuecode': 'LAST20'
-        }])
-    }
-    data = get(params)
-    name = data['returndata']['wdnodes'][0]['nodes'][0]['name']
-    unit = data['returndata']['wdnodes'][0]['nodes'][0]['unit']
-    province = data['returndata']['wdnodes'][1]['nodes'][0]['name']
-    out = []
-    for node in data['returndata']['datanodes']:
-        out.append({
-            'data': node['data']['data'],
-            'year': node['wds'][2]['valuecode'],
-            'province': province,
-            'unit': unit
-        })
-    with open(name + '_' + province + '.csv', 'w', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, out[0].keys())
-        writer.writeheader()
-        writer.writerows(out)
-    return out
+def http_get(url):
+    with urllib.request.urlopen(url) as f:
+        return f.read().decode('utf-8')
 
 
-def get(params):
-    url = base_url + '?' + urllib.parse.urlencode(params)
-    request = urllib.request.Request(url, headers=headers)
-    with opener.open(url) as f:
-        content = f.read().decode('utf-8')
-    content = json.loads(content)
-    return content
+class NationalData:
+    def __init__(self):
+        self.base_url = 'http://data.stats.gov.cn/easyquery.htm'
+
+    def get_root_tree_params(self, data_type):
+        content = http_get(parse_url(self.base_url, {'cn': data_type}))
+        reg_results = re.findall(r"var\srootTree\s=\s'(.*?)';", content)
+        if reg_results:
+            return json.loads(reg_results[0])
+
+    def get_tree(self, tree_param):
+        data = {
+            'id': tree_param['id'],
+            'dbcode': tree_param['dbcode'],
+            'wdcode': tree_param['wdcode'],
+            'm': 'getTree'
+        }
+        request = urllib.request.Request(self.base_url, data=urllib.parse.urlencode(data).encode('utf-8'))
+        with urllib.request.urlopen(request) as f:
+            content = f.read().decode('utf-8')
+            content = json.loads(content)
+            # print(json.dumps(content,indent=4))
+            return content
+
+    def build_tree(self, root):
+        if root['isParent']:
+            root['children'] = self.get_tree(root)
+            for item in root['children']:
+                self.build_tree(item)
+        return root
+
 
 if __name__ == '__main__':
-    init('A0604')
-    for province in provinces:
-        data = get_data('A060402', province['code'])
+    national_data = NationalData()
+    root_tree_params = national_data.get_root_tree_params('A01')
+    for root_tree_param in root_tree_params:
+        print('root tree param', root_tree_param)
+        root_tree = national_data.build_tree(root_tree_param)
+        pp.pprint(root_tree)
